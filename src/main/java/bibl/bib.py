@@ -2,6 +2,8 @@ import os
 
 import requests
 import time
+import bibtexparser
+from bibtexparser.bwriter import BibTexWriter
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from cryptography.fernet import Fernet
@@ -39,22 +41,36 @@ class Biblioteca:
             pagina.click("span.button-text:has-text('Search')")
 
             pagina.wait_for_selector("li.ResultItem", timeout=15000)
-            resultados = pagina.locator("li.ResultItem")
-            num_resultados = resultados.count()
-            print(f"Resultados encontrados: {num_resultados}")
 
-            for i in range(cantidad):
-                item_element = resultados.nth(i).element_handle()
-                print(f"Procesando artículo #{i + 1}")
-                Biblioteca.exportar_cita_sciencedirect(pagina, item_element, i)
+            total_descargados = 0
+            pagina_number = 1
 
-                # Cambiar de página si es necesario
-                if (i + 1) % 25 == 0 and (i + 1) < num_resultados:
-                    print(f"Cargando página {((i + 1) // 25) + 1}")
-                    pagina.click("span.anchor-text:has-text('Next')")
-                    pagina.wait_for_selector("li.ResultItem", timeout=15000)
+            while total_descargados < cantidad:
+                resultados = pagina.locator("li.ResultItem")
+                num_resultados_pagina = resultados.count()
+                print(f"Resultados detectados en página {pagina_number}: {num_resultados_pagina}")
+
+                for j in range(num_resultados_pagina):
+                    index_global = total_descargados  # índice absoluto (0-based)
+                    if index_global >= cantidad:
+                        break
+                    print(f"Procesando artículo #{index_global + 1}")
+                    item_element = resultados.nth(j).element_handle()
+                    Biblioteca.exportar_cita_sciencedirect(pagina, item_element, index_global + 1)
+                    total_descargados += 1
+
+                if total_descargados < cantidad:
+                    print(f"Cargando página {pagina_number + 1}")
+                    try:
+                        pagina.click("span.anchor-text:has-text('Next')")
+                        pagina.wait_for_selector("li.ResultItem", timeout=15000)
+                        pagina_number += 1
+                    except Exception as e:
+                        print(f"No hay más páginas disponibles: {e}")
+                        break
 
             navegador.close()
+
 
     @staticmethod
     def exportar_cita_sciencedirect(pagina, item_element, indice_articulo):
@@ -88,15 +104,45 @@ class Biblioteca:
 
             download = download_info.value
 
-            # Ruta de destino para guardar la cita
-            ruta_destino = os.path.join(
-                r"C:\Users\Bryan\Documents\btw\code\Programacion\AlgoritmosProyecto\src\main\resources",
-                f"{indice_articulo + 1}_{download.suggested_filename}"
-            )
-            download.save_as(ruta_destino)
-            print(f"Cita descargada: {ruta_destino}")
+            # Leer el contenido de la descarga desde su archivo temporal
+            ruta_temporal = download.path()
+            with open(ruta_temporal, "r", encoding="utf-8") as f:
+                contenido = f.read()
 
-            # Desmarcar la casilla verificando aria-checked
+            # Extraer el DOI del contenido BibTeX
+            doi = None
+            titulo = None
+            for linea in contenido.splitlines():
+                if 'doi' in linea.lower() and doi is None:
+                    doi = linea.split('=')[1].strip().strip('{}").,')
+                if 'title' in linea.lower() and titulo is None:
+                    titulo = linea.split('=')[1].strip().strip('{}").,')
+
+            # Revisar si el DOI ya existe
+            if doi:
+                if Biblioteca.doi_existente(doi):
+                    print(f"El DOI {doi} ya existe, no se guarda la descarga.")
+                else:
+                    ruta_destino = os.path.join(
+                        r"C:\Users\Bryan\Documents\btw\code\Programacion\AlgoritmosProyecto\src\main\resources",
+                        f"{download.suggested_filename}"
+                    )
+                    download.save_as(ruta_destino)
+                    print(f"Cita descargada: {ruta_destino}")
+                    Biblioteca.reordenar_y_filtrar_bibtex(ruta_destino)
+            else:
+                if titulo and Biblioteca.titulo_existente(titulo):
+                    print(f"El título '{titulo}' ya existe, no se guarda la descarga.")
+                else:
+                    ruta_destino = os.path.join(
+                        r"C:\Users\Bryan\Documents\btw\code\Programacion\AlgoritmosProyecto\src\main\resources",
+                        f"{download.suggested_filename}"
+                    )
+                    download.save_as(ruta_destino)
+                    print(f"Cita descargada (por título): {ruta_destino}")
+                    Biblioteca.reordenar_y_filtrar_bibtex(ruta_destino)
+
+            # Desmarcar la casilla
             aria_checked = label.get_attribute("aria-checked")
             label.click()
 
@@ -155,9 +201,8 @@ class Biblioteca:
             except:
                 print("No se encontraron artículos en IEEE.")
                 navegador.close()
-                return []
 
-            articulos = []
+
             for r in resultados[:3]:
                 try:
                     r.scroll_into_view_if_needed()
@@ -168,15 +213,13 @@ class Biblioteca:
                     enlace = pagina.url
                     cita = Biblioteca.extraer_cita_ieee(pagina)
 
-                    articulos.append({"titulo": titulo, "enlace": enlace, "cita": cita})
-
                     pagina.go_back()
                     pagina.wait_for_timeout(3000)
                 except Exception as e:
                     print(f"Error al procesar un artículo: {e}")
 
             navegador.close()
-            return articulos
+
 
     @staticmethod
     def extraer_cita_ieee(pagina, indice=None):
@@ -203,30 +246,149 @@ class Biblioteca:
 
             archivo_descargado = descarga.value
 
-            # Si no se proporciona un índice, usar timestamp para evitar sobrescritura
-            if indice is None:
-                indice = int(time.time())  # Timestamp para garantizar unicidad
+            # Leer el contenido desde el archivo temporal
+            ruta_temporal = archivo_descargado.path()
+            with open(ruta_temporal, "r", encoding="utf-8") as f:
+                contenido = f.read()
 
-            ruta_guardado = f"C:\\Users\\Bryan\\Documents\\btw\\code\\Programacion\\AlgoritmosProyecto\\src\\main\\resources\\cita_ieee_{indice}.bib"
-            archivo_descargado.save_as(ruta_guardado)
+            # Extraer el DOI y título del contenido BibTeX
+            doi = None
+            titulo = None
+            for linea in contenido.splitlines():
+                if 'doi' in linea.lower() and doi is None:
+                    doi = linea.split('=')[1].strip().strip('{}").,')
+                if 'title' in linea.lower() and titulo is None:
+                    titulo = linea.split('=')[1].strip().strip('{}").,')
+                if doi and titulo:
+                    break
 
-            return f"Citas descargadas: {ruta_guardado}"
+            if doi:
+                if Biblioteca.doi_existente(doi):
+                    print(f"El DOI {doi} ya existe, no se realizará la descarga.")
+                    return f"El DOI {doi} ya existe, no se realizará la descarga."
+                else:
+                    if indice is None:
+                        indice = int(time.time())
+                    ruta_guardado = f"C:\\Users\\Bryan\\Documents\\btw\\code\\Programacion\\AlgoritmosProyecto\\src\\main\\resources\\cita_ieee_{indice}.bib"
+                    archivo_descargado.save_as(ruta_guardado)
+                    Biblioteca.reordenar_y_filtrar_bibtex(ruta_guardado)
+                    return f"Citas descargadas: {ruta_guardado}"
+            else:
+                if titulo and Biblioteca.titulo_existente(titulo):
+                    print(f"El título '{titulo}' ya existe, no se realizará la descarga.")
+                    return f"El título '{titulo}' ya existe, no se realizará la descarga."
+                else:
+                    if indice is None:
+                        indice = int(time.time())
+                    ruta_guardado = f"C:\\Users\\Bryan\\Documents\\btw\\code\\Programacion\\AlgoritmosProyecto\\src\\main\\resources\\cita_ieee_{indice}.bib"
+                    archivo_descargado.save_as(ruta_guardado)
+                    Biblioteca.reordenar_y_filtrar_bibtex(ruta_guardado)
+                    return f"Citas descargadas (por título): {ruta_guardado}"
 
         except Exception as e:
             return f"Error al extraer cita: {e}"
 
 
+
+
+
     @staticmethod
     def buscar_todo(query, cantidad, correo, contrasena):
-        articulos_sciencedirect = Biblioteca.buscar_sciencedirect(query, correo, contrasena, cantidad)
+        Biblioteca.buscar_sciencedirect(query, correo, contrasena, cantidad)
         #articulos_sage = Biblioteca.buscar_sage(query)
-        #articulos_ieee = Biblioteca.buscar_ieee(query, cantidad)
+        articulos_ieee = Biblioteca.buscar_ieee(query, cantidad)
 
-        return {
-            "ScienceDirect": articulos_sciencedirect,
-            #"SAGE": articulos_sage,
-            #"IEEE": articulos_ieee
-        }
+
+
+
+    @staticmethod
+    def reordenar_y_filtrar_bibtex(ruta_archivo):
+        with open(ruta_archivo, 'r', encoding='utf-8') as bibfile:
+            bib_database = bibtexparser.load(bibfile)
+
+        orden_deseado = [
+            'author',
+            'booktitle_or_journal',
+            'title',
+            'year',
+            'pages',
+            'abstract',
+            'doi',
+            'keywords',
+            'issn'
+        ]
+
+        nuevas_entradas = []
+
+        for entry in bib_database.entries:
+            lineas = []
+
+            # Cabecera: tipo y clave
+            tipo = entry.get('ENTRYTYPE', 'article')
+            clave = entry.get('ID', 'unknown')
+            lineas.append(f"@{tipo}{{{clave},")
+
+            for campo in orden_deseado:
+                if campo == 'booktitle_or_journal':
+                    valor = entry.get('booktitle') or entry.get('journal') or ''
+                    nombre_campo = 'booktitle' if 'booktitle' in entry else 'journal'
+                    lineas.append(f"  {nombre_campo} = {{{valor}}},")
+                else:
+                    valor = entry.get(campo, '')
+                    lineas.append(f"  {campo} = {{{valor}}},")
+
+            # Cierra la entrada
+            if lineas[-1].endswith(','):
+                lineas[-1] = lineas[-1][:-1]  # quita la última coma
+            lineas.append("}")
+
+            nuevas_entradas.append('\n'.join(lineas))
+
+        # Sobrescribe el archivo con las nuevas entradas
+        with open(ruta_archivo, 'w', encoding='utf-8') as bibfile:
+            bibfile.write('\n\n'.join(nuevas_entradas))
+
+
+
+    @staticmethod
+    def doi_existente(doi_buscar):
+        ruta_base = r"C:\Users\Bryan\Documents\btw\code\Programacion\AlgoritmosProyecto\src\main\resources"
+
+        for root, _, files in os.walk(ruta_base):
+            for archivo in files:
+                if archivo.endswith('.bib'):  # Solo buscar en archivos .bib
+                    ruta_archivo = os.path.join(root, archivo)
+                    try:
+                        with open(ruta_archivo, 'r', encoding='utf-8') as f:
+                            # Leer el contenido del archivo BibTeX
+                            bib_database = bibtexparser.load(f)
+                            for entry in bib_database.entries:
+                                # Comprobar si el DOI está en el campo 'doi'
+                                if 'doi' in entry and entry['doi'] == doi_buscar:
+                                    return True
+                    except Exception as e:
+                        print(f"Error leyendo {ruta_archivo}: {e}")
+        return False
+
+    @staticmethod
+    def titulo_existente(titulo):
+        ruta_base = r"C:\Users\Bryan\Documents\btw\code\Programacion\AlgoritmosProyecto\src\main\resources"
+
+        for root, _, files in os.walk(ruta_base):
+            for archivo in files:
+                if archivo.endswith('.bib'):  # Solo buscar en archivos .bib
+                    ruta_archivo = os.path.join(root, archivo)
+                    try:
+                        with open(ruta_archivo, 'r', encoding='utf-8') as f:
+                            # Leer el contenido del archivo BibTeX
+                            bib_database = bibtexparser.load(f)
+                            for entry in bib_database.entries:
+                                # Comprobar si el DOI está en el campo 'title'
+                                if 'title' in entry and entry['title'] == titulo:
+                                    return True
+                    except Exception as e:
+                        print(f"Error leyendo {ruta_archivo}: {e}")
+        return False
 
 # Ejemplo de uso
 
@@ -248,5 +410,5 @@ contrasena = credenciales["contrasena"]
 
 #Uso de la clase biblioteca
 biblioteca = Biblioteca()
-resultados = biblioteca.buscar_todo("Machine Learning", 3, correo, contrasena)
+resultados = biblioteca.buscar_todo("Machine Learning", 2, correo, contrasena)
 print(resultados)
