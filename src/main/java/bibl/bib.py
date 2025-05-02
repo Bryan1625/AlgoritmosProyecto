@@ -43,10 +43,10 @@ class Biblioteca:
             num_resultados = resultados.count()
             print(f"Resultados encontrados: {num_resultados}")
 
-            for i in range(min(cantidad, num_resultados)):
+            for i in range(cantidad):
                 item_element = resultados.nth(i).element_handle()
                 print(f"Procesando artículo #{i + 1}")
-                Biblioteca.extraer_cita_sciencedirect(pagina, item_element, i)
+                Biblioteca.exportar_cita_sciencedirect(pagina, item_element, i)
 
                 # Cambiar de página si es necesario
                 if (i + 1) % 25 == 0 and (i + 1) < num_resultados:
@@ -57,29 +57,34 @@ class Biblioteca:
             navegador.close()
 
     @staticmethod
-    def extraer_cita_sciencedirect(pagina, item_element, indice_articulo):
+    def exportar_cita_sciencedirect(pagina, item_element, indice_articulo):
         try:
             item_element.scroll_into_view_if_needed()
             print("Artículo localizado")
 
-            rank_number_elem = item_element.query_selector("div.rank-number.u-text-center.u-text--")
-            rank_text = rank_number_elem.inner_text().strip()
-            print(f"Número de artículo esperado: {rank_text}")
+            # Obtener el número de artículo (valor visible en el checkbox)
+            numero_articulo_span = item_element.query_selector("span.checkbox-label-value")
+            numero_articulo = numero_articulo_span.inner_text().strip()
+            print(f"Número de artículo: {numero_articulo}")
 
-            # Hacer clic en el botón de exportar
-            export_btn = item_element.query_selector("button:has-text('Export')")
-            export_btn.click()
-            print("Clic en botón 'Export'")
+            # Seleccionar el label del checkbox correspondiente
+            label_selector = f"label.checkbox-label:has(span.checkbox-label-value:text-is('{numero_articulo}'))"
+            label = pagina.locator(label_selector).first
+            label.click()
+            print(f"Checkbox del artículo #{numero_articulo} seleccionado")
 
-            # Esperar a que aparezca el modal solo DESPUÉS del clic en este export_btn
-            modal = pagina.locator("div:has(button:has-text('Export citation to BibTeX'))").first
-            modal.wait_for(state="visible", timeout=5000)
+            # Hacer clic en 'Export' general
+            pagina.locator("span.export-all-link-text", has_text="Export").click()
+            print("Clic en enlace 'Export'")
 
-            # Ahora dentro de este modal, buscar el botón 'Export citation to BibTeX'
-            export_bibtex_btn = modal.locator("button:has-text('Export citation to BibTeX')").first
+            # Esperar el botón de exportación a BibTeX aparezca y esté visible
+            exportar_boton = pagina.locator("button[data-aa-button='srp-export-multi-bibtex']").first
+            exportar_boton.wait_for(state="visible", timeout=10000)
 
+            # Esperar la descarga al hacer clic
             with pagina.expect_download() as download_info:
-                export_bibtex_btn.click()
+                exportar_boton.click()
+                print("Clic en 'Export citation to BibTeX'")
 
             download = download_info.value
 
@@ -91,8 +96,13 @@ class Biblioteca:
             download.save_as(ruta_destino)
             print(f"Cita descargada: {ruta_destino}")
 
+            # Desmarcar la casilla verificando aria-checked
+            aria_checked = label.get_attribute("aria-checked")
+            label.click()
+
         except Exception as e:
             print(f"Error al exportar cita del artículo: {e}")
+
 
 
     @staticmethod
