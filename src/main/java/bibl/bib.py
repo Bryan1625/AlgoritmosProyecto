@@ -239,6 +239,13 @@ class Biblioteca:
             pagina.wait_for_timeout(2000)
 
             with pagina.expect_download() as descarga:
+                # Marcar el checkbox antes de descargar
+                checkbox = pagina.locator("div.enable-abstract input[type='checkbox']").first
+                checkbox.scroll_into_view_if_needed()
+                checkbox.wait_for(state="visible", timeout=3000)
+                if not checkbox.is_checked():
+                    checkbox.check(force=True)
+
                 boton_descargar = pagina.locator("a.stats-download-citations-button-download").first
                 boton_descargar.scroll_into_view_if_needed()
                 boton_descargar.wait_for(state="visible", timeout=3000)
@@ -292,11 +299,13 @@ class Biblioteca:
 
 
 
+
+
     @staticmethod
     def buscar_todo(query, cantidad, correo, contrasena):
-        Biblioteca.buscar_sciencedirect(query, correo, contrasena, cantidad)
+        #Biblioteca.buscar_sciencedirect(query, correo, contrasena, cantidad)
         #articulos_sage = Biblioteca.buscar_sage(query)
-        articulos_ieee = Biblioteca.buscar_ieee(query, cantidad)
+        Biblioteca.buscar_ieee(query, cantidad)
 
 
 
