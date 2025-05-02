@@ -36,3 +36,7 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+### Credenciales ###
+/src/main/java/bibl/clave.key
+/src/main/java/bibl/credenciales.enc

@@ -1,43 +1,103 @@
+import os
+
 import requests
 import time
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+from cryptography.fernet import Fernet
+import json
 
 class Biblioteca:
     HEADERS = {"User-Agent": "Mozilla/5.0"}
 
     @staticmethod
-    def buscar_sciencedirect(query):
-        url = f"https://www.sciencedirect.com/search?qs={query}"
-        response = requests.get(url, headers=Biblioteca.HEADERS)
-        soup = BeautifulSoup(response.text, "html.parser")
-        articulos = []
-
-        for item in soup.select(".result-item-content h2 a"):
-            titulo = item.text.strip()
-            enlace = "https://www.sciencedirect.com" + item["href"]
-            cita = Biblioteca.extraer_cita_sciencedirect(enlace)
-            articulos.append({"titulo": titulo, "enlace": enlace, "cita": cita})
-
-        return articulos
-
-    @staticmethod
-    def extraer_cita_sciencedirect(url):
+    def buscar_sciencedirect(query, correo, contrasena, cantidad):
         with sync_playwright() as p:
             navegador = p.chromium.launch(channel="chrome", headless=False)
             pagina = navegador.new_page()
-            pagina.goto(url)
-            pagina.click("text=Cite")
+
+            # Acceder a través del proxy
+            pagina.goto("https://login.intelproxy.com/v2/inicio?cuenta=7Ah6RNpGWF22jjyq&url=ezp.2aHR0cHM6Ly93d3cuc2NpZW5jZWRpcmVjdC5jb20-")
             pagina.wait_for_timeout(2000)
-            pagina.click("text=Export citation to BibTeX")
-            pagina.wait_for_timeout(2000)
-            cita = pagina.locator("textarea").inner_text()
+
+            # Iniciar sesión con Google
+            pagina.click("a#btn-google")
+            pagina.wait_for_selector("input[type='email']", timeout=10000)
+            pagina.fill("input[type='email']", correo)
+            pagina.click("button:has-text('Siguiente')")
+            pagina.wait_for_timeout(3000)
+
+            pagina.wait_for_selector("input[type='password']", timeout=10000)
+            pagina.fill("input[type='password']", contrasena)
+            pagina.click("button:has-text('Siguiente')")
+            pagina.wait_for_timeout(5000)
+
+            # Buscar artículos
+            pagina.wait_for_selector("input#qs", timeout=10000)
+            pagina.focus("input#qs")
+            pagina.keyboard.type(query, delay=100)
+            pagina.click("span.button-text:has-text('Search')")
+
+            pagina.wait_for_selector("li.ResultItem", timeout=15000)
+            resultados = pagina.locator("li.ResultItem")
+            num_resultados = resultados.count()
+            print(f"Resultados encontrados: {num_resultados}")
+
+            for i in range(min(cantidad, num_resultados)):
+                item_element = resultados.nth(i).element_handle()
+                print(f"Procesando artículo #{i + 1}")
+                Biblioteca.extraer_cita_sciencedirect(pagina, item_element, i)
+
+                # Cambiar de página si es necesario
+                if (i + 1) % 25 == 0 and (i + 1) < num_resultados:
+                    print(f"Cargando página {((i + 1) // 25) + 1}")
+                    pagina.click("span.anchor-text:has-text('Next')")
+                    pagina.wait_for_selector("li.ResultItem", timeout=15000)
+
             navegador.close()
-            return cita if cita else "Cita no encontrada"
+
+    @staticmethod
+    def extraer_cita_sciencedirect(pagina, item_element, indice_articulo):
+        try:
+            item_element.scroll_into_view_if_needed()
+            print("Artículo localizado")
+
+            rank_number_elem = item_element.query_selector("div.rank-number.u-text-center.u-text--")
+            rank_text = rank_number_elem.inner_text().strip()
+            print(f"Número de artículo esperado: {rank_text}")
+
+            # Hacer clic en el botón de exportar
+            export_btn = item_element.query_selector("button:has-text('Export')")
+            export_btn.click()
+            print("Clic en botón 'Export'")
+
+            # Esperar a que aparezca el modal solo DESPUÉS del clic en este export_btn
+            modal = pagina.locator("div:has(button:has-text('Export citation to BibTeX'))").first
+            modal.wait_for(state="visible", timeout=5000)
+
+            # Ahora dentro de este modal, buscar el botón 'Export citation to BibTeX'
+            export_bibtex_btn = modal.locator("button:has-text('Export citation to BibTeX')").first
+
+            with pagina.expect_download() as download_info:
+                export_bibtex_btn.click()
+
+            download = download_info.value
+
+            # Ruta de destino para guardar la cita
+            ruta_destino = os.path.join(
+                r"C:\Users\Bryan\Documents\btw\code\Programacion\AlgoritmosProyecto\src\main\resources",
+                f"{indice_articulo + 1}_{download.suggested_filename}"
+            )
+            download.save_as(ruta_destino)
+            print(f"Cita descargada: {ruta_destino}")
+
+        except Exception as e:
+            print(f"Error al exportar cita del artículo: {e}")
+
 
     @staticmethod
     def buscar_sage(query):
-        url = f"https://journals.sagepub.com/action/doSearch?AllField={query}"
+        url = f"https://login.intelproxy.com/v2/inicio?cuenta=7Ah6RNpGWF22jjyq&url=ezp.2aHR0cHM6Ly9zay5zYWdlcHViLmNvbS8-"
         response = requests.get(url, headers=Biblioteca.HEADERS)
         soup = BeautifulSoup(response.text, "html.parser")
         articulos = []
@@ -147,18 +207,36 @@ class Biblioteca:
 
 
     @staticmethod
-    def buscar_todo(query, cantidad: int):
-        articulos_sciencedirect = Biblioteca.buscar_sciencedirect(query)
-        articulos_sage = Biblioteca.buscar_sage(query)
-        articulos_ieee = Biblioteca.buscar_ieee(query, cantidad)
+    def buscar_todo(query, cantidad, correo, contrasena):
+        articulos_sciencedirect = Biblioteca.buscar_sciencedirect(query, correo, contrasena, cantidad)
+        #articulos_sage = Biblioteca.buscar_sage(query)
+        #articulos_ieee = Biblioteca.buscar_ieee(query, cantidad)
 
         return {
             "ScienceDirect": articulos_sciencedirect,
-            "SAGE": articulos_sage,
-            "IEEE": articulos_ieee
+            #"SAGE": articulos_sage,
+            #"IEEE": articulos_ieee
         }
 
 # Ejemplo de uso
+
+# Leer la clave secreta
+with open("clave.key", "rb") as f:
+    clave = f.read()
+
+# Leer los datos cifrados
+with open("credenciales.enc", "rb") as f:
+    datos_cifrados = f.read()
+# Desencriptar
+fernet = Fernet(clave)
+datos_json = fernet.decrypt(datos_cifrados).decode()
+credenciales = json.loads(datos_json)
+
+# Usar sin imprimirlos
+correo = credenciales["correo"]
+contrasena = credenciales["contrasena"]
+
+#Uso de la clase biblioteca
 biblioteca = Biblioteca()
-resultados = biblioteca.buscar_todo("Machine Learning")
+resultados = biblioteca.buscar_todo("Machine Learning", 3, correo, contrasena)
 print(resultados)
